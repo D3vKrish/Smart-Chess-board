@@ -5,7 +5,6 @@ Default bot move time: 500ms
 '''
 import time
 import serial
-import subprocess
 import chess
 import chess.engine
 import whisper
@@ -16,19 +15,23 @@ import pygame
 #os.environ["OMP_NUM_THREADS"] = "1"
 
 # Communication setup
-SERIAL_PORT = "/dev/ttyUSB0"   # or /dev/ttyUSB0 for raspberry pi 0
-#SERIAL_PORT = "COM7"
+SERIAL_PORT = "COM7" 
+SERIAL_PORT_2 = "COM14"
 BAUDRATE = 9600
 
-ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
-ser.flush()
+movSer = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
+keySer = serial.Serial(SERIAL_PORT_2, BAUDRATE, timeout=1)
+
+movSer.flush()
+keySer.flush()
 
 # Chessboard setup
 board = chess.Board()
-engine_path = r"/home/pi/chessBoard/stockfish-android-armv8"  
-#engine_path = r"C:\Users\Krish Garg\stockfish\stockfish-windows-x86-64-avx2.exe"  # Windows path for testing on PC
+#engine_path = "/usr/games/stockfish"
+##engine_path = r"/home/pi/chessBoard/stockfish-android-armv8"  
+engine_path = r"C:\Users\Krish Garg\stockfish\stockfish-windows-x86-64-avx2.exe"  # Windows path for testing on PC
 engine = chess.engine.SimpleEngine.popen_uci(engine_path)
-print("Loading Whisper (tiny.en)...")
+print("Loading Whisper (small.en)...")
 model = whisper.load_model("tiny.en")  #Using tiny model for faster processing on raspi
 SAMPLERATE = 16000
 DURATION = 3  # seconds to listen
@@ -37,36 +40,90 @@ DURATION = 3  # seconds to listen
 mic_enabled = False
 
 #Setting up pygame
+
 pygame.init()
-WIDTH = HEIGHT = 640
-SQ_SIZE = WIDTH // 8
+BOARD_SIZE = 800
+LABEL_MARGIN = 40
+WIDTH = HEIGHT = BOARD_SIZE + LABEL_MARGIN
+SQ_SIZE = BOARD_SIZE // 8
 SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Voice Chess Board")
+BOARD_X = LABEL_MARGIN
+BOARD_Y = 0
+FONT = pygame.font.SysFont("arial", 40)
+LABEL_COLOR = pygame.Color("white")
 
-# Functions
-#Function to print the board
-# def print_board():
-#     """Print the current board in ASCII."""
-#     print("\n" + board.unicode(borders=True) + "\n")
+# Load piece images
+IMAGES = {}
+pieces = ["wp","bp","wn","bn","wb","bb","wr","br","wq","bq","wk","bk"]
+for piece in pieces:
+    IMAGES[piece] = pygame.transform.scale(
+        pygame.image.load(f'images/{piece}.png'), 
+        (SQ_SIZE,SQ_SIZE)
+    )
 
+# Pygame Functions
 def draw_board():
     colors = [pygame.Color("white"), pygame.Color("gray")]
     for r in range(8):
         for c in range(8):
-            color = colors[(r+c) % 2]
-            pygame.draw.rect(SCREEN, color, pygame.Rect(c*SQ_SIZE, r*SQ_SIZE, SQ_SIZE, SQ_SIZE))
+            color = colors[(r + c) % 2]
+            pygame.draw.rect(
+                SCREEN,
+                color,
+                pygame.Rect(
+                    BOARD_X + c * SQ_SIZE,
+                    BOARD_Y + r * SQ_SIZE,
+                    SQ_SIZE,
+                    SQ_SIZE
+                )
+            )
 
 def draw_pieces():
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece:
-            r = 7 - (square // 8)
-            c = square % 8
+            rank = chess.square_rank(square)
+            file = chess.square_file(square)
+            r = 7 - rank
+            c = file
             color = 'w' if piece.color else 'b'
             key = color + piece.symbol().lower()
             img = IMAGES[key]
-            SCREEN.blit(img, pygame.Rect(c*SQ_SIZE, r*SQ_SIZE, SQ_SIZE, SQ_SIZE))
+            SCREEN.blit(
+                img,
+                pygame.Rect(
+                    BOARD_X + c * SQ_SIZE,
+                    BOARD_Y + r * SQ_SIZE,
+                    SQ_SIZE,
+                    SQ_SIZE
+                )
+            )
 
+def draw_file_labels():
+    files = "abcdefgh"
+    for i, f in enumerate(files):
+        label = FONT.render(f, True, LABEL_COLOR)
+        x = BOARD_X + i * SQ_SIZE + SQ_SIZE // 2 - label.get_width() // 2
+        y = BOARD_SIZE + 5
+        SCREEN.blit(label, (x, y))
+        
+def draw_rank_labels():
+    for i in range(8):
+        rank = str(8 - i)
+        label = FONT.render(rank, True, LABEL_COLOR)
+        x = 10
+        y = BOARD_Y + i * SQ_SIZE + SQ_SIZE // 2 - label.get_height() // 2
+        SCREEN.blit(label, (x, y))
+        
+def redraw():
+    draw_board()
+    draw_pieces()
+    draw_file_labels()
+    draw_rank_labels()
+    pygame.display.flip()
+        
+#Movement functions
 #Check move type: Capture, Promotion, or Normal
 def check_move_type(board, move_uci):
     move = chess.Move.from_uci(move_uci)
@@ -75,13 +132,21 @@ def check_move_type(board, move_uci):
         return None
     if board.is_capture(move):
         return "c"
-
+    if board.is_castling(move):
+        return "a"
+    if board.is_en_passant(move):
+        return "e"
     piece = board.piece_at(move.from_square)
     if (piece and piece.piece_type == chess.PAWN
         and piece.color == chess.WHITE
         and chess.square_rank(move.to_square) == 7):
         return "p"
+    elif (piece and piece.piece_type == chess.PAWN
+        and piece.color == chess.BLACK
+        and chess.square_rank(move.to_square) == 0):
+        return "p"
     return "m"
+    
 #Get all possible legal moves from a square
 #TODO: Will implement later once rest of code is properly tested
 def get_legal_moves_from_square(board, square_name):
@@ -122,17 +187,61 @@ def parse_move(text):
 
     return None, None
 
+#Send data to Arduino
+def sendtoboard(arduino, msg):
+    print(f"-> Arduino:", msg)
+    arduino.write(f"heyArduino {msg}\n".encode())
+    time.sleep(0.1)
+    
+#Receive data from Arduino
+def getboard(arduino):
+    print("Waiting for Arduino...")
+    start = time.time()
+    while time.time() - start < 30:
+        if arduino.in_waiting:
+            msg = arduino.readline().decode().strip().lower()
+            if msg.lower().startswith("heypi"):
+                msg = msg.split("heypi",1)[1].strip()
+                print(f"Arduino: {msg}")
+                return msg
+        time.sleep(0.01)
+    raise TimeoutError("No response from Arduino")
+
+#Voice command functions
+def record_audio(duration, samplerate=16000):
+    audio = []
+
+    def callback(indata, frames, time, status):
+        if status:
+            print(status)
+        audio.append(indata.copy())
+
+    with sd.InputStream(
+        samplerate=samplerate,
+        channels=1,
+        dtype="float32",
+        callback=callback
+    ):
+        sd.sleep(int(duration * 1000))
+
+    audio = np.concatenate(audio, axis=0)
+    return audio.squeeze()
 
 def listen_and_interpret():
     print("\nSpeak command (move / hint / new game)...")
 
-    input("Press ENTER and speak...") # TODO: Change to button press on raspi
-    audio = sd.rec(int(SAMPLERATE * DURATION), samplerate=SAMPLERATE, channels=1)
-    sd.wait()
-
-    audio = np.squeeze(audio)
+    #input("Press ENTER and speak...")
+    sendtoboard(keySer, "CHOICE")
+    while True:
+        choice = getboard(keySer).strip().lower()
+        if choice.lower() == "y":
+            break
+        else:
+            return "keypad"
+    audio = record_audio(DURATION, SAMPLERATE)
     result = model.transcribe(audio, language="en")
     text = result["text"].strip().lower()
+
 
     print(f"Heard: {text}")
 
@@ -156,43 +265,13 @@ def listen_and_interpret():
 
     print("Could not understand command")
     return ""
-
-#Send data to Arduino
-def sendtoboard(msg):
-    print("-> Arduino:", msg)
-    ser.write(f"heyArduino {msg}\n".encode())
-    time.sleep(0.1)
-
-#Receive data from Arduino
-def getboard():
-    print("Waiting for Arduino...")
-    start = time.time()
-    while time.time() - start < 30:
-        if ser.in_waiting:
-            msg = ser.readline().decode().strip().lower()
-            if msg.lower().startswith("heypi"):
-                msg = msg[len("heypi"):].strip()
-                print(f"Arduino: {msg}")
-                return msg
-        time.sleep(0.01)
-    raise TimeoutError("No response from Arduino")
-
-#Print on OLED screen
-def sendToScreen(l1, l2="", l3="", size="14"):
-    subprocess.Popen([
-        "python3",
-        "/home/pi/SmartChess/RaspberryPiCode/printToOLED.py",
-        "-a", l1, "-b", l2, "-c", l3, "-s", size
-    ])
-
+    
 # Game logic functions
 def newgame():
     global board
     board.reset()
-    #sendToScreen("NEW", "GAME", "", "30")
     time.sleep(1)
-    #sendToScreen("Please enter", "your move")
-    print_board()
+    redraw()
     return ""
 
 def get_engine_move(movetime_ms):
@@ -209,110 +288,108 @@ def get_hint():
     hint = pv[0].uci() if pv else "----"
     return hint
 
-def wait_for_ok():
-    while True:
-        if ser.in_waiting:
-            msg = ser.readline().decode(errors="ignore").strip().lower()
-            if msg.startswith("heypi"):
-                payload = msg[len("heypi"):].strip()
-                print("Arduino:", payload)
-                if payload == "ok":
-                    break
+def wait_for_ok(arduino, timeout=120):
+    start = time.time()
+    while time.time() - start < timeout:
+        if arduino.in_waiting:
+            msg = arduino.readline().decode(errors="ignore").strip().lower()
+            if "heypi" in msg and "ok" in msg:
+                return
+        pygame.event.pump()
+        time.sleep(0.01)
+    raise TimeoutError("Arduino did not respond with OK")
+
+                    
 
 #Confirm player's move
 def bmove(fmove, bmessage, movetime):
     try:
         move_uci = bmessage[1:5]
         user_move = chess.Move.from_uci(move_uci)
+
         if user_move not in board.legal_moves:
-            raise ValueError
+            raise ValueError("Illegal base move")
+
         move_type = check_move_type(board, user_move.uci())
-        sendtoboard(f"{move_type}{user_move}")
-        if(move_type == "p"):
-            promo = getboard().strip().lower()
+        # Handle promotion FIRST
+        if move_type == "p":
+            promo = getboard(keySer).strip().lower()
             promo_map = {"a":"q", "b":"r", "c":"b", "d":"n"}
             move_uci += promo_map.get(promo, "q")
             user_move = chess.Move.from_uci(move_uci)
-            if user_move not in board.legal_moves:
-                raise ValueError
-        wait_for_ok()
-        board.push(user_move)
-        print_board()
 
-    except Exception:
-        #sendToScreen("Illegal move!", "Try again")
-        sendtoboard("Illegal Move")
+            if user_move not in board.legal_moves:
+                raise ValueError("Illegal promotion")
+
+        #Send to board after all moves have been validated
+        board.push(user_move)
+        redraw()
+        sendtoboard(movSer, f"{move_type}{user_move}")
+        wait_for_ok(movSer)
+        
+        
+
+    except Exception as e:
+        print("Move error:", e)
+        sendtoboard(movSer, "Illegal Move")
         return "RETRY"
-    
+        
     if board.is_game_over():
-        #sendToScreen("Game Over", board.result())
-        sendtoboard("gameover")
+        sendtoboard(movSer, "gameover")
         return "GAMEOVER"
 
-    '''sendToScreen(
-        user_move.uci()[:2] + "->" + user_move.uci()[2:],
-        "",
-        "Thinking..."
-    )'''
-
     engine_move = get_engine_move(movetime)
-
     engine_move_obj = chess.Move.from_uci(engine_move)
     board.push(engine_move_obj)
-    print_board()
-   # if board.is_game_over():
-        #sendToScreen("Game Over", board.result())
-
-
-    '''sendToScreen(
-        engine_move[:2] + "->" + engine_move[2:],
-        "",
-        "Your go..."
-    )'''
-
-    sendtoboard(f"m{engine_move}")
-    wait_for_ok()
+    redraw()
+    sendtoboard(movSer,f"m{engine_move}")
+    wait_for_ok(movSer)
     return fmove + " " + user_move.uci() + " " + engine_move
 
 # Main gameplay loop
 time.sleep(1)
 try:
     while True:
-        sendtoboard("READY")
+        sendtoboard(movSer, "READY")
         while True:
-            if getboard().lower() == "startgame":
+            pygame.event.pump()
+            if getboard(movSer).lower() == "startgame":
                 break
             time.sleep(0.05)
-        sendtoboard("CHOICE")
-        choice = getboard().strip().lower()
+        sendtoboard(keySer, "READY")
+        while True:
+            pygame.event.pump()
+            if getboard(keySer).lower() == "startgame":
+                break
+            time.sleep(0.05)
+        sendtoboard(keySer, "CHOICE")
+        choice = getboard(keySer).strip().lower()
         if choice.lower() == "y":
             mic_enabled = True
         else:
             mic_enabled = False
-        #sendToScreen("Choose computer", "difficulty level", "(0 -> 20)")
-       
-        # try:
-        #     skill = getboard()
-        # except ValueError:
-        #     skill = 10
-        # engine.configure({"Skill Level": int(skill)})
-        # #sendToScreen("Choose computer", "move time", "(100 – 2000ms)")
-        # try:
-        #     movetime = 2000 - int(skill)
-        # except ValueError:
-        #     movetime = 500
-
+        
         #TODO: Fixded for now, make it dynamic later, same with skill level
         engine.configure({"Skill Level": 10})
         movetime = 500
         fmove = newgame()
 
         while True:
-            sendtoboard("GET") 
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    if engine and engine.is_alive():
+                        engine.quit()
+                    movSer.close()
+                    keySer.close()
+                    pygame.quit()
+                    exit(0)
+            sendtoboard(keySer, "GET") 
             if (mic_enabled):
                 bmessage = listen_and_interpret()  # --> For voice command input
+                if bmessage == "keypad":
+                    bmessage = getboard(keySer) 
             else:
-                bmessage = getboard()  #--> For arduino communication
+                bmessage = getboard(keySer)  #--> For arduino communication
             if not bmessage:
                 continue
             code = bmessage[0]
@@ -329,26 +406,23 @@ try:
 
             elif code == "h":
                 if board.turn == chess.WHITE:
-                    if engine.ping():
-                        hint = get_hint()
-                        #sendToScreen("Hint:", hint)
+                    engine.ping()
+                    hint = get_hint()
                 else:
                     pass
-                    #sendToScreen("Wait for", "your turn")
             elif code == "a":
-                #sendToScreen("Game Aborted")
                 board.reset()
                 continue
             elif code == "q":
-                #sendToScreen("Quitting", "Goodbye!")
                 if engine and engine.is_alive():
                     engine.quit()
-                ser.close()
+                movSer.close()
                 exit(0)
             else:
-                sendtoboard("error")
+                sendtoboard(movSer, "error")
 except KeyboardInterrupt:
     print("Exiting...")
     if engine and engine.is_alive():
         engine.quit()
-    ser.close()
+    movSer.close()
+    keySer.close()
