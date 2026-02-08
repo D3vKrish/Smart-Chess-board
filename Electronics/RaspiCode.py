@@ -272,6 +272,8 @@ def newgame():
     board.reset()
     time.sleep(1)
     redraw()
+    with open("data.txt","w") as f:
+        f.write("d4\n")
     return ""
 
 def get_engine_move(movetime_ms):
@@ -324,7 +326,27 @@ def bmove(fmove, bmessage, movetime):
         #Send to board after all moves have been validated
         board.push(user_move)
         redraw()
-        sendtoboard(movSer, f"{move_type}{user_move}")
+        home = ""
+        with open("data.txt") as f:
+            lines = f.readlines()
+            home = lines[-1].strip()
+        if not home:
+            home = "d4"
+        sendtoboard(movSer, f"{move_type}{user_move}{home}")
+        with open("data.txt","a") as f:
+            f.write(user_move.uci()[0:2] + "\n")
+            f.write(user_move.uci()[2:4] + "\n")
+        if move_type == "a":
+            if(user_move.uci()[2:4] == "g1"):
+                end = "f1"
+            elif(user_move.uci()[2:4] == "c1"):
+                end = "d1"
+            elif(user_move.uci()[2:4] == "g8"):
+                end = "f8"
+            elif(user_move.uci()[2:4] == "c8"):
+                end = "d8"
+            with open("data.txt","a") as f:
+                f.write(f"{end}\n")
         wait_for_ok(movSer)
         
         
@@ -340,9 +362,39 @@ def bmove(fmove, bmessage, movetime):
 
     engine_move = get_engine_move(movetime)
     engine_move_obj = chess.Move.from_uci(engine_move)
+    move_type = check_move_type(board, engine_move_obj.uci())
+    # Handle promotion FIRST
+    if move_type == "p":
+            promo = getboard(keySer).strip().lower()
+            promo_map = {"a":"q", "b":"r", "c":"b", "d":"n"}
+            engine_move += promo_map.get(promo, "q")
+            eng_move = chess.Move.from_uci(engine_move)
+
+            if eng_move not in board.legal_moves:
+                raise ValueError("Illegal promotion")
     board.push(engine_move_obj)
     redraw()
-    sendtoboard(movSer,f"m{engine_move}")
+    home = ""
+    with open("data.txt") as f:
+            lines = f.readlines()
+            home = lines[-1].strip()
+    if not home:
+        home = "d4"
+    sendtoboard(movSer,f"{move_type}{engine_move}{home}")
+    with open("data.txt","a") as f:
+            f.write(engine_move_obj.uci()[0:2] + "\n")
+            f.write(engine_move_obj.uci()[2:4] + "\n")
+    if move_type == "a":
+        if(engine_move_obj.uci()[2:4] == "g1"):
+            end = "f1"
+        elif(engine_move_obj.uci()[2:4] == "c1"):
+            end = "d1"
+        elif(engine_move_obj.uci()[2:4] == "g8"):
+            end = "f8"
+        elif(engine_move_obj.uci()[2:4] == "c8"):
+            end = "d8"
+        with open("data.txt","a") as f:
+            f.write(f"{end}\n")
     wait_for_ok(movSer)
     return fmove + " " + user_move.uci() + " " + engine_move
 
@@ -377,7 +429,7 @@ try:
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    if engine and engine.is_alive():
+                    if engine:
                         engine.quit()
                     movSer.close()
                     keySer.close()
@@ -414,7 +466,7 @@ try:
                 board.reset()
                 continue
             elif code == "q":
-                if engine and engine.is_alive():
+                if engine:
                     engine.quit()
                 movSer.close()
                 exit(0)
@@ -422,7 +474,7 @@ try:
                 sendtoboard(movSer, "error")
 except KeyboardInterrupt:
     print("Exiting...")
-    if engine and engine.is_alive():
+    if engine:
         engine.quit()
     movSer.close()
     keySer.close()
