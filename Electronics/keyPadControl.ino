@@ -10,8 +10,8 @@
     { '7', '8', '9', 'C' },
     { '*', '0', 'Y', 'N' }
   };
-
-  byte rowPins[ROWS] = { 5, 12, 11, 10 };
+   
+  byte rowPins[ROWS] = { 13, 12, 11, 10 };
   byte colPins[COLS] = { 9, 8, 7, 6 };
   bool readKeys = false, choice= false;
   bool promo = false;
@@ -46,9 +46,9 @@
         piReceive += c;
       }
     }
-    if (readKeys || choice || promo) {
-      readKeypad();
-    }
+    if (readKeys) readKeypad();
+    else if (choice) readKeypad();
+    else if (promo) readKeypad();
   }
   
   char cmd2 = '\0';
@@ -74,8 +74,13 @@
       }
 
       if (key == 'A') {
-        if(choice || promo)
+        if(choice || promo){
+          if(cmd2 == 'A')
+            cmd2 = 'y';
+          else 
+            cmd2 = 'n';
           Serial.println("heypi "+String(cmd2));
+        }
         else if(readKeys)
           Serial.println("heypi m" + String(cmd));
         readKeys = false;
@@ -113,21 +118,6 @@
     else if (piCommand.equalsIgnoreCase("choice")) {
       choice = true;
     } 
-    //Else block for if recieving normal piece move
-    else if(piCommand.startsWith("m")){
-      String toSend = piCommand.substring(1);
-      moveMotor(toSend);
-      Serial.println("heypi ok");
-    }
-    //Else block for if recieving move to capture a piece
-    else if(piCommand.startsWith("c")){
-      String captured = piCommand.substring(3);
-      String toSend = piCommand.substring(1);
-      captured+=preset;
-      moveMotor(captured);
-      moveMotor(toSend);
-      Serial.println("heypi ok");
-    }
     else if(piCommand.startsWith("p")){
       promo = true;
     }
