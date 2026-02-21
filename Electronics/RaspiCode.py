@@ -79,32 +79,58 @@ for piece in pieces:
     )
 
 # Pygame Functions
-game_start_ticks = None
-GAME_DURATION_MS = 20 * 60 * 1000 
+game_start_ticks   = None         
+total_paused_ms    = 0            
+pause_start_ticks  = None          
+GAME_DURATION_MS   = 20 * 60 * 1000
 
 def start_timer():
-    global game_start_ticks
-    game_start_ticks = pygame.time.get_ticks()
+    global game_start_ticks, total_paused_ms, pause_start_ticks
+    game_start_ticks  = pygame.time.get_ticks()
+    total_paused_ms   = 0
+    pause_start_ticks = None
+
+def pause_timer():
+    global pause_start_ticks
+    if game_start_ticks is not None and pause_start_ticks is None:
+        pause_start_ticks = pygame.time.get_ticks()
+
+def resume_timer():
+    global total_paused_ms, pause_start_ticks
+    if pause_start_ticks is not None:
+        total_paused_ms  += pygame.time.get_ticks() - pause_start_ticks
+        pause_start_ticks = None
+
+def get_elapsed_ms():
+    if game_start_ticks is None:
+        return 0
+    now = pygame.time.get_ticks()
+    paused = total_paused_ms
+    if pause_start_ticks is not None:          
+        paused += now - pause_start_ticks
+    return now - game_start_ticks - paused
 
 def draw_timer():
     if game_start_ticks is None:
         return
-    elapsed = pygame.time.get_ticks() - game_start_ticks
-    remaining = max(0, GAME_DURATION_MS - elapsed)
+    remaining = max(0, GAME_DURATION_MS - get_elapsed_ms())
     mins = remaining // 60000
     secs = (remaining % 60000) // 1000
-    color = pygame.Color("red") if remaining < 30000 else LABEL_COLOR 
-    timer_text = FONT.render(f"{mins:02d}:{secs:02d}", True, color)
-    if(remaining <= 0):
-        timer_text = FONT.render("Time over", True, color)
-        SCREEN.blit(timer_text, (BOARD_X + BOARD_SIZE - timer_text.get_width(), 
-                              LABEL_MARGIN // 2 - timer_text.get_height() // 2))
-        time.sleep(5)
-        exit(0)
+    if remaining == 0:
+        label = "Time's up!"
+        color = pygame.Color("red")
     else:
-        SCREEN.blit(timer_text, (BOARD_X + BOARD_SIZE - timer_text.get_width(), 
+        label = f"{mins:02d}:{secs:02d}"
+        color = pygame.Color("red") if remaining < 30000 else LABEL_COLOR
+    timer_text = FONT.render(label, True, color)
+    SCREEN.blit(timer_text, (BOARD_X + BOARD_SIZE - timer_text.get_width(), 
                               LABEL_MARGIN // 2 - timer_text.get_height() // 2))
     
+def is_time_up():
+    if game_start_ticks is None:
+        return False
+    return get_elapsed_ms() >= GAME_DURATION_MS
+
 def draw_board():
     colors = [pygame.Color("white"), pygame.Color("gray")]
     for r in range(8):
@@ -444,6 +470,7 @@ def bmove(fmove, bmessage, movetime):
             home = lines[-1].strip()
         if not home:
             home = "d4"
+        pause_timer() 
         sendtoboard(movSer, f"{move_type}{user_move}{home}")
         with open("data.txt","a") as f:
             f.write(user_move.uci()[0:2] + "\n")
@@ -460,12 +487,14 @@ def bmove(fmove, bmessage, movetime):
             with open("data.txt","a") as f:
                 f.write(f"{end}\n")
         wait_for_ok(movSer)
+        resume_timer() 
         
         
 
     except Exception as e:
         print("Move error:", e)
         sendtoboard(movSer, "Illegal Move")
+        resume_timer()
         return "RETRY"
         
     if board.is_game_over():
@@ -475,15 +504,6 @@ def bmove(fmove, bmessage, movetime):
     engine_move = get_engine_move(movetime)
     engine_move_obj = chess.Move.from_uci(engine_move)
     move_type = check_move_type(board, engine_move_obj.uci())
-    # Handle promotion FIRST
-    if move_type == "p":
-            promo = getboard(keySer).strip().lower()
-            promo_map = {"a":"q", "b":"r", "c":"b", "d":"n"}
-            engine_move += promo_map.get(promo, "q")
-            eng_move = chess.Move.from_uci(engine_move)
-
-            if eng_move not in board.legal_moves:
-                raise ValueError("Illegal promotion")
     board.push(engine_move_obj)
     redraw()
     home = ""
@@ -492,6 +512,10 @@ def bmove(fmove, bmessage, movetime):
             home = lines[-1].strip()
     if not home:
         home = "d4"
+    if(move_type == "p"):
+        move_type = "m"
+        engine_move = engine_move[:-2]
+    pause_timer() 
     sendtoboard(movSer,f"{move_type}{engine_move}{home}")
     with open("data.txt","a") as f:
             f.write(engine_move_obj.uci()[0:2] + "\n")
@@ -508,6 +532,7 @@ def bmove(fmove, bmessage, movetime):
         with open("data.txt","a") as f:
             f.write(f"{end}\n")
     wait_for_ok(movSer)
+    resume_timer() 
     return fmove + " " + user_move.uci() + " " + engine_move
 
 # Main gameplay loop
@@ -571,18 +596,22 @@ try:
             if mouse_enabled:
                 bmessage = get_mouse_move()
             else:
-                sendtoboard(keySer, "GET") 
                 if (mic_enabled):
                     bmessage = listen_and_interpret() 
                     if bmessage == "mouse":
                         bmessage = get_mouse_move()
                 else:
+                    sendtoboard(keySer, "GET")  #Check in updated code
                     bmessage = getboard(keySer)
             if not bmessage:
                 continue
             code = bmessage[0]
 
             if code == "m":
+                if is_time_up():
+                    print("Time is up — move ignored.")
+                    sendtoboard(keySer, "TIMESUP")
+                    continue
                 fmove = bmove(fmove, bmessage, movetime)
                 if fmove == "GAMEOVER":
                     if engine:
@@ -596,6 +625,8 @@ try:
                 break
 
             elif code == "h":
+                if is_time_up():
+                    continue
                 if board.turn == chess.WHITE:
                     engine.ping()
                     hint = get_hint()
