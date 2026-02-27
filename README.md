@@ -141,7 +141,14 @@ Create an `images/` folder in the project root containing the following piece im
 
 ## Running the Application
 ```bash
-python3 raspiCode.py
+python3 RaspiCode.py
+```
+
+## Testing motor movement and callibration
+
+To callibrate the lenght of a step and direction of motor movement, upload keyControlArduino file to motor arduino and then run the keyControlPython file after updating the port on which the arduino is connected. This helps set the distance moved during 1 step and get an idea of board dimensions.
+```bash
+python3 keyControlPython.py
 ```
 
 ---
